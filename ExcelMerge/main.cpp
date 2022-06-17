@@ -89,25 +89,31 @@ public:
 		writer.begin_packed();
 
 		size_t numDigits = 0;
-		std::vector<std::unique_ptr<sheet_worker>> workers;
-
 		for (auto i = m_sheets.size(); i; i /= 10)
 			numDigits++;
 		numDigits = (std::max<size_t>)(1, numDigits);
 
-		std::vector<std::string> exhNames;
-		exhNames.reserve(m_sheets.size());
+		std::vector<std::unique_ptr<sheet_worker>> allWorkers;
+		std::vector<std::unique_ptr<sheet_worker>> activeWorkers;
+		
+		allWorkers.reserve(m_sheets.size());
 		for (const auto& exhName : m_sheets | std::views::keys)
-			exhNames.emplace_back(exhName);
+			allWorkers.emplace_back(std::make_unique<sheet_worker>(*this, exhName, writer, ttmpdCompressionLevel));
+
+		std::ranges::sort(allWorkers, [](const std::unique_ptr<sheet_worker>& l, const std::unique_ptr<sheet_worker>& r) {
+			const auto& lh = l->source_reader().header();
+			const auto& rh = r->source_reader().header();
+			return lh.ColumnCount * lh.RowCountWithoutSkip * lh.LanguageCount > rh.ColumnCount * rh.RowCountWithoutSkip * rh.LanguageCount;
+		});
 
 		try {
 			xivres::util::thread_pool::task_waiter<sheet_worker*> waiter;
 			
 			auto nextPrint = std::chrono::steady_clock::now();
-			for (size_t i = 0; i < exhNames.size() || !workers.empty();) {
-				if (i < exhNames.size() && workers.size() < xivres::util::thread_pool::pool::current().concurrency()) {
-					const auto& pWorker = workers.emplace_back(std::make_unique<sheet_worker>(*this, exhNames[i++], writer, ttmpdCompressionLevel));
-					waiter.submit([this, pWorker = pWorker.get()](auto& task) {
+			for (size_t i = 0; i < allWorkers.size() || !activeWorkers.empty();) {
+				if (i < allWorkers.size() && activeWorkers.size() < 2 * xivres::util::thread_pool::pool::current().concurrency()) {
+					auto pWorker = activeWorkers.emplace_back(std::move(allWorkers[i++])).get();
+					waiter.submit([this, pWorker](auto& task) {
 						task.throw_if_cancelled();
 						try {
 							pWorker->work();
@@ -119,11 +125,14 @@ public:
 				}
 
 				if (const auto res = waiter.get(nextPrint)) {
-					for (auto it = workers.begin();;) {
-						if (it == workers.end()) {
+					for (auto it = activeWorkers.begin();;) {
+						if (it == activeWorkers.end()) {
 							std::abort();
 						} else if (it->get() == *res) {
-							workers.erase(it);
+							// free it in another thread
+							std::thread([ptr = std::move(*it)]{}).detach();
+							
+							activeWorkers.erase(it);
 							break;
 						} else {
 							++it;
@@ -136,21 +145,18 @@ public:
 				if (nextPrint > now)
 					continue;
 
-				const sheet_worker* pWorker = nullptr;
-				for (auto& worker : workers) {
-					if (!pWorker || worker->progress_percentage() > pWorker->progress_percentage())
-						pWorker = worker.get();
-				}
-				if (!pWorker)
+				if (activeWorkers.empty())
 					continue;
+				
+				const sheet_worker& worker = *activeWorkers.front();
 
 				nextPrint = now + std::chrono::milliseconds(200);
 				std::cout << std::format(
 					"[{:0{}}/{:0{}}] {:3.2f}% [{}] {} \r",
 					i, numDigits,
-					exhNames.size(), numDigits,
-					pWorker->progress_percentage(),
-					pWorker->exh_name(), pWorker->progress_name()) << std::flush;
+					allWorkers.size(), numDigits,
+					worker.progress_percentage(),
+					worker.exh_name(), worker.progress_name()) << std::flush;
 			}
 
 			std::cout << std::endl;
@@ -182,6 +188,10 @@ private:
 			, m_exhReaderSource(m_owner.m_source, m_sExhName)
 			, m_writer(writer)
 			, m_ttmpdCompressionLevel(ttmpdCompressionLevel) {
+		}
+
+		[[nodiscard]] const xivres::excel::exh::reader& source_reader() const {
+			return m_exhReaderSource;
 		}
 
 		[[nodiscard]] double progress_percentage() const {
