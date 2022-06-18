@@ -28,7 +28,7 @@ class excel_transformer {
 		std::vector<std::string> PostprocessActionNames;
 	};
 
-	std::vector<std::pair<srell::u8cregex, std::map<xivres::game_language, std::vector<size_t>>>> columnMaps;
+	std::vector<std::pair<srell::u8cregex, std::map<xivres::game_language, std::vector<size_t>>>> m_columnMaps;
 	std::vector<std::pair<srell::u8cregex, structs::PluralColumns>> m_pluralColumns;
 	std::map<xivres::game_language, std::vector<ReplacementRule>> m_rowReplacementRules;
 	std::map<xivres::game_language, std::set<structs::IgnoredCell>> m_ignoredCells;
@@ -39,12 +39,26 @@ public:
 		: m_source(gamePath)
 		, m_sheets(xivres::excel::exl::reader(m_source).name_to_id_map()) {
 
-		m_fallbackLanguages.emplace_back(xivres::game_language::English);
 		m_fallbackLanguages.emplace_back(xivres::game_language::Japanese);
+		m_fallbackLanguages.emplace_back(xivres::game_language::English);
 		m_fallbackLanguages.emplace_back(xivres::game_language::French);
 		m_fallbackLanguages.emplace_back(xivres::game_language::German);
 		m_fallbackLanguages.emplace_back(xivres::game_language::ChineseSimplified);
 		m_fallbackLanguages.emplace_back(xivres::game_language::Korean);
+	}
+
+	void move_fallback_language_to_top(xivres::game_language language) {
+		for (auto it = m_fallbackLanguages.begin(); it != m_fallbackLanguages.end();) {
+			if (*it == language)
+				it = m_fallbackLanguages.erase(it);
+			else
+				++it;
+		}
+		m_fallbackLanguages.insert(m_fallbackLanguages.begin(), language);
+	}
+
+	const std::vector<xivres::game_language>& fallback_languages() const {
+		return m_fallbackLanguages;
 	}
 
 	void add_additional_root(const std::filesystem::path& path) {
@@ -55,15 +69,15 @@ public:
 		const auto transformConfig = nlohmann::json::parse(std::ifstream(path)).get<structs::Config>();
 
 		for (const auto& entry : transformConfig.columnMap)
-			columnMaps.emplace_back(srell::u8cregex(entry.first, srell::regex_constants::ECMAScript | srell::regex_constants::icase), entry.second);
+			m_columnMaps.emplace_back(srell::u8cregex(entry.first, srell::regex_constants::ECMAScript | srell::regex_constants::icase), entry.second);
 
 		for (const auto& entry : transformConfig.pluralMap)
 			m_pluralColumns.emplace_back(srell::u8cregex(entry.first, srell::regex_constants::ECMAScript | srell::regex_constants::icase), entry.second);
 
 		for (const auto& entry : transformConfig.replacementTemplates) {
 			m_actions.emplace(entry.first, std::make_pair(
-								srell::u8cregex(entry.second.from, srell::regex_constants::ECMAScript | (entry.second.icase ? srell::regex_constants::icase : srell::regex_constants::syntax_option_type())),
-								entry.second.to));
+				srell::u8cregex(entry.second.from, srell::regex_constants::ECMAScript | (entry.second.icase ? srell::regex_constants::icase : srell::regex_constants::syntax_option_type())),
+				entry.second.to));
 		}
 
 		m_ignoredCells[transformConfig.targetLanguage].insert(transformConfig.ignoredCells.begin(), transformConfig.ignoredCells.end());
@@ -95,7 +109,7 @@ public:
 
 		std::vector<std::unique_ptr<sheet_worker>> allWorkers;
 		std::vector<std::unique_ptr<sheet_worker>> activeWorkers;
-		
+
 		allWorkers.reserve(m_sheets.size());
 		for (const auto& exhName : m_sheets | std::views::keys)
 			allWorkers.emplace_back(std::make_unique<sheet_worker>(*this, exhName, writer, ttmpdCompressionLevel));
@@ -108,7 +122,7 @@ public:
 
 		try {
 			xivres::util::thread_pool::task_waiter<sheet_worker*> waiter;
-			
+
 			auto nextPrint = std::chrono::steady_clock::now();
 			for (size_t i = 0; i < allWorkers.size() || !activeWorkers.empty();) {
 				if (i < allWorkers.size() && activeWorkers.size() < 2 * xivres::util::thread_pool::pool::current().concurrency()) {
@@ -130,8 +144,8 @@ public:
 							std::abort();
 						} else if (it->get() == *res) {
 							// free it in another thread
-							std::thread([ptr = std::move(*it)]{}).detach();
-							
+							std::thread([ptr = std::move(*it)] {}).detach();
+
 							activeWorkers.erase(it);
 							break;
 						} else {
@@ -147,7 +161,7 @@ public:
 
 				if (activeWorkers.empty())
 					continue;
-				
+
 				const sheet_worker& worker = *activeWorkers.front();
 
 				nextPrint = now + std::chrono::milliseconds(200);
@@ -187,8 +201,7 @@ private:
 			, m_sExhName(std::move(exhName))
 			, m_exhReaderSource(m_owner.m_source, m_sExhName)
 			, m_writer(writer)
-			, m_ttmpdCompressionLevel(ttmpdCompressionLevel) {
-		}
+			, m_ttmpdCompressionLevel(ttmpdCompressionLevel) { }
 
 		[[nodiscard]] const xivres::excel::exh::reader& source_reader() const {
 			return m_exhReaderSource;
@@ -271,8 +284,8 @@ private:
 
 	private:
 		structs::PluralColumns pluralColumnIndices{};
-		std::map<xivres::game_language, std::vector<ReplacementRule>> exhRowReplacementRules;
-		std::map<xivres::game_language, std::vector<size_t>> columnMap;
+		std::map<xivres::game_language, std::vector<ReplacementRule>> m_exhRowReplacementRules;
+		std::map<xivres::game_language, std::vector<size_t>> m_columnMap;
 
 		bool load_source() {
 			if (m_exhReaderSource.header().Variant != xivres::excel::variant::Level2)
@@ -321,30 +334,30 @@ private:
 				}
 			}
 
-			exhRowReplacementRules.clear();
+			m_exhRowReplacementRules.clear();
 			for (const auto language : m_owner.m_fallbackLanguages)
-				exhRowReplacementRules.emplace(language, std::vector<ReplacementRule>{});
+				m_exhRowReplacementRules.emplace(language, std::vector<ReplacementRule>{});
 
 			for (auto& [language, rules] : m_owner.m_rowReplacementRules) {
-				auto& exhRules = exhRowReplacementRules.at(language);
+				auto& exhRules = m_exhRowReplacementRules.at(language);
 				for (auto& rule : rules)
 					if (regex_search(m_sExhName, rule.SheetNameRegex))
 						exhRules.emplace_back(rule);
 			}
 
-			columnMap.clear();
-			for (const auto& [pattern, data] : m_owner.columnMaps) {
+			m_columnMap.clear();
+			for (const auto& [pattern, data] : m_owner.m_columnMaps) {
 				if (!regex_search(m_sExhName, pattern))
 					continue;
 				for (const auto& [language, data2] : data)
-					columnMap[language] = data2;
+					m_columnMap[language] = data2;
 			}
 		}
 
-		size_t translateColumnIndex(xivres::game_language fromLanguage, xivres::game_language toLanguage, size_t fromIndex) {
-			const auto fromIter = columnMap.find(fromLanguage);
-			const auto toIter = columnMap.find(toLanguage);
-			if (fromIter == columnMap.end() || toIter == columnMap.end())
+		size_t translate_column_index(xivres::game_language fromLanguage, xivres::game_language toLanguage, size_t fromIndex) {
+			const auto fromIter = m_columnMap.find(fromLanguage);
+			const auto toIter = m_columnMap.find(toLanguage);
+			if (fromIter == m_columnMap.end() || toIter == m_columnMap.end())
 				return fromIndex;
 
 			const auto it = std::ranges::lower_bound(fromIter->second, fromIndex);
@@ -504,10 +517,10 @@ private:
 									{
 										constexpr auto N = structs::PluralColumns::Index_NoColumn;
 										size_t cols[]{
-											pluralColumnIndices.capitalizedColumnIndex == N ? N : translateColumnIndex(referenceRowLanguage, language, pluralColumnIndices.capitalizedColumnIndex),
-											pluralColumnIndices.singularColumnIndex == N ? N : translateColumnIndex(referenceRowLanguage, language, pluralColumnIndices.singularColumnIndex),
-											pluralColumnIndices.pluralColumnIndex == N ? N : translateColumnIndex(referenceRowLanguage, language, pluralColumnIndices.pluralColumnIndex),
-											pluralColumnIndices.languageSpecificColumnIndex == N ? N : translateColumnIndex(referenceRowLanguage, language, pluralColumnIndices.languageSpecificColumnIndex),
+											pluralColumnIndices.capitalizedColumnIndex == N ? N : translate_column_index(referenceRowLanguage, language, pluralColumnIndices.capitalizedColumnIndex),
+											pluralColumnIndices.singularColumnIndex == N ? N : translate_column_index(referenceRowLanguage, language, pluralColumnIndices.singularColumnIndex),
+											pluralColumnIndices.pluralColumnIndex == N ? N : translate_column_index(referenceRowLanguage, language, pluralColumnIndices.pluralColumnIndex),
+											pluralColumnIndices.languageSpecificColumnIndex == N ? N : translate_column_index(referenceRowLanguage, language, pluralColumnIndices.languageSpecificColumnIndex),
 										};
 										for (auto& col : cols) {
 											if (col == N || col >= prevRow.size() || prevRow[col].Type != xivres::excel::cell_type::String)
@@ -521,21 +534,21 @@ private:
 										if (row[j].Type != xivres::excel::cell_type::String)
 											continue;
 
-										const auto otherColIndex = translateColumnIndex(referenceRowLanguage, language, j);
+										const auto otherColIndex = translate_column_index(referenceRowLanguage, language, j);
 										if (otherColIndex >= prevRow.size()) {
 											if (otherColIndex == j)
 												continue;
 
 											std::cerr << std::format(
 												"[{}] Skipping column: Column {} of language {} is was requested but there are {} columns",
-												m_sExhName, j, otherColIndex, static_cast<int>(language), prevRow.size()) << std::endl;
+												m_sExhName, j, otherColIndex, game_language_code(language), prevRow.size()) << std::endl;
 											continue;
 										}
 
 										if (prevRow[otherColIndex].Type != xivres::excel::cell_type::String) {
 											std::cerr << std::format(
 												"[{}] Skipping column: Column {} of language {} is string but column {} of language {} is not a string",
-												m_sExhName, j, static_cast<int>(referenceRowLanguage), otherColIndex, static_cast<int>(language)) << std::endl;
+												m_sExhName, j, game_language_code(referenceRowLanguage), otherColIndex, game_language_code(language)) << std::endl;
 											continue;
 										}
 
@@ -682,7 +695,7 @@ private:
 		) {
 			std::map<xivres::game_language, std::vector<xivres::excel::cell>> pendingReplacements;
 			for (const auto& language : m_sheet->Languages) {
-				const auto& rules = exhRowReplacementRules.at(language);
+				const auto& rules = m_exhRowReplacementRules.at(language);
 
 				const std::set<structs::IgnoredCell>* currentIgnoredCells = nullptr;
 				if (const auto it = m_owner.m_ignoredCells.find(language); it != m_owner.m_ignoredCells.end())
@@ -825,12 +838,12 @@ private:
 
 		void export_to_ttmps() {
 			xivres::util::thread_pool::pool::throw_if_current_task_cancelled();
-			
+
 			auto compiled = m_sheet->compile();
 			size_t i = 0;
 			for (auto& [entryPathSpec, data] : compiled) {
 				xivres::util::thread_pool::pool::throw_if_current_task_cancelled();
-				
+
 				m_pcszProgressName = "Pack";
 				const auto packed = xivres::compressing_packed_stream<xivres::standard_compressing_packer>(
 					entryPathSpec,
@@ -842,7 +855,7 @@ private:
 				std::vector<char>().swap(data);
 
 				xivres::util::thread_pool::pool::throw_if_current_task_cancelled();
-				
+
 				m_pcszProgressName = "Write";
 				m_writer.add_packed(packed);
 
@@ -860,113 +873,137 @@ int main(int argc, char **argv) {
 #endif
 
 	argparse::ArgumentParser parser;
-	std::vector<std::filesystem::path> rootPaths;
-	std::vector<std::filesystem::path> presetPaths;
-	std::filesystem::path outputPath;
-
-#ifdef _WIN32
-	parser.add_argument("-r", "--root")
-		.append()
-		.required()
-		.help(R"(specify game installation paths (specify "game" directory, or use ":global", ":china", or ":korea" or auto detect))");
-#else
-	parser.add_argument("-r", "--root")
-		.append()
-		.required()
-		.help(R"(specify game installation paths (specify "game" directory))");
-#endif
-	parser.add_argument("-p", "--preset")
-		.append()
-		.help("specify preset (excel transformation config)");
-	parser.add_argument("-o", "--output")
-		.required()
-		.help("specify output ttmp2 file path, including .ttmp2 extension");
-	parser.add_argument("-c", "--compression-level")
-		.default_value(0)
-		.required()
-		.help("specify compression level (0: don't, 9: best)");
-
-	{
+	try {
 		std::vector<std::string> args;
 		args.reserve(argc);
 		for (int i = 0; i < argc; i++)
 			args.emplace_back(xivres::util::unicode::convert<std::string>(argv[i]));
-		parser.parse_args(args);
-	}
 
-	for (const auto& u8path : parser.get<std::vector<std::string>>("-r")) {
-		std::filesystem::path path;
+		parser
+			.add_description("Merges game localizations for different languages, possibly from different versions, to show them at the same time.")
+			.add_epilog(std::format("\n"
+				R"(Usage examples:)" "\n"
+				R"(* {0} -r "C:\Program Files (x86)\SquareEnix\FINAL FANTASY XIV - A Realm Reborn\game")" "\n"
+				R"(  -p Presets\EnglishWithJapanese_SayQuestEnglish.json -o merged.ttmp2)" "\n"
+				R"(  => Shows Japanese text for some text along with English, when launching the game in English,)"
+				R"(     and save the result file as merged.ttmp2 in the current directory.)" "\n"
+				R"(* {0} -r "C:\Program Files (x86)\SquareEnix\FINAL FANTASY XIV - A Realm Reborn\game")" "\n"
+				R"(  -r "C:\Program Files (x86)\SNDA\FFXIV\game")" "\n"
+				R"(  -r "C:\Program Files (x86)\FINAL FANTASY XIV - KOREA\game")" "\n"
+				R"(  -p Presets\CrossRegionRemapping.json -o C:\merged2.ttmp2)" "\n"
+				R"(  -f en -f ja -f chs -f ko)" "\n"
+				R"(  => Make text from another language version of the game available in global version,)" "\n"
+				R"(     and save the result file as merged2.ttmp2 in C:\.)" "\n"
+				R"(     When some text is unavailable from Chinese and Korean releases, )" "\n"
+				R"(     attempt to find missing text from English version first.)",
+				xivres::util::unicode::convert<std::string>(std::filesystem::path(argv[0]).filename().u8string())));
 
+		parser
+			.add_argument("-r", "--root")
+			.append()
+			.required()
 #ifdef _WIN32
-		if (u8path == ":global") {
-			path = xivres::installation::find_installation_global();
-			if (path.empty()) {
-				std::cerr << "Could not autodetect global client installation path." << std::endl;
-				return -1;
-			}
-
-		} else if (u8path == ":china") {
-			path = xivres::installation::find_installation_china();
-			if (path.empty()) {
-				std::cerr << "Could not autodetect Chinese client installation path." << std::endl;
-				return -1;
-			}
-
-		} else if (u8path == ":korea") {
-			path = xivres::installation::find_installation_korea();
-			if (path.empty()) {
-				std::cerr << "Could not autodetect Korean client installation path." << std::endl;
-				return -1;
-			}
-
-		} else {
-			path = xivres::util::unicode::convert<std::wstring>(u8path);
-		}
+			.help(R"(specify game installation paths (specify "game" directory, or use ":global", ":china", or ":korea" or auto detect))")
 #else
-		path = u8path;
+			.help(R"(specify game installation paths (specify "game" directory))");
+#endif
+			.action([](const std::string& u8path) {
+				std::filesystem::path path;
+#ifdef _WIN32
+				if (u8path == ":global") {
+					path = xivres::installation::find_installation_global();
+					if (path.empty())
+						throw std::runtime_error("Could not autodetect global client installation path.");
+
+				} else if (u8path == ":china") {
+					path = xivres::installation::find_installation_china();
+					if (path.empty())
+						throw std::runtime_error("Could not autodetect Chinese client installation path.");
+
+				} else if (u8path == ":korea") {
+					path = xivres::installation::find_installation_korea();
+					if (path.empty())
+						throw std::runtime_error("Could not autodetect Korean client installation path.");
+
+				} else {
+					path = xivres::util::unicode::convert<std::wstring>(u8path);
+				}
+#else
+					path = u8path;
 #endif
 
-		if (!path.is_absolute())
-			path = absolute(path);
+				if (!path.is_absolute())
+					path = absolute(path);
+				if (!exists(path))
+					throw std::runtime_error(std::format("Path does not exist: {}", xivres::util::unicode::convert<std::string>(path.u8string())));
+				return path;
+			});
+		parser
+			.add_argument("-p", "--preset")
+			.append()
+			.help("specify preset (excel transformation config)")
+			.action([](const std::string& u8path) {
+				std::filesystem::path path = xivres::util::unicode::convert<std::wstring>(u8path);
+				if (!path.is_absolute())
+					path = absolute(path);
+				if (!exists(path))
+					throw std::runtime_error(std::format("Path does not exist: {}", xivres::util::unicode::convert<std::string>(path.u8string())));
+				return path;
+			});
+		parser
+			.add_argument("-f", "--fallback")
+			.append()
+			.help("specify fallback langauges to use, when a text is missing from the game's other version;"
+				" defaults are in order of ja, en, de, fr, chs, and ko")
+			.action([](const std::string& str) {
+				xivres::game_language lang;
+				from_json(nlohmann::json(str), lang);
+				if (lang == xivres::game_language::Unspecified)
+					throw std::runtime_error(std::format("Unsupported fallback language: {}", str));
+				return lang;
+			});
+		parser
+			.add_argument("-o", "--output")
+			.required()
+			.help("specify output ttmp2 file path, including .ttmp2 extension")
+			.action([](const std::string& u8path) {
+				std::filesystem::path path = xivres::util::unicode::convert<std::wstring>(u8path);
+				if (!path.is_absolute())
+					path = absolute(path);
+				return path;
+			});
+		parser
+			.add_argument("-c", "--compression-level")
+			.default_value(0)
+			.required()
+			.help("specify compression level (0: don't, 9: best)")
+			.action([](const std::string& str) {
+				char* ptr;
+				const auto n = static_cast<int>(strtol(&str[0], &ptr, 0));
+				if (ptr - &str[0] != static_cast<ptrdiff_t>(str.size()))
+					throw std::runtime_error(std::format("Failed to parse as an integer: {}", str));
+				if (n < 0 || n > Z_BEST_COMPRESSION)
+					throw std::runtime_error("Invalid compression level");
+				return n;
+			});
 
-		if (!exists(path)) {
-			std::cerr << "Path does not exist: " << path << std::endl;
-			return -1;
-		}
+		parser.parse_args(args);
 
-		rootPaths.emplace_back(std::move(path));
+	} catch (const std::exception& e) {
+		std::cerr
+			<< "Error parsing arguments. Use -h to show help." << std::endl
+			<< e.what() << std::endl;
+		return -1;
 	}
+
+	const auto rootPaths = parser.get<std::vector<std::filesystem::path>>("-r");
+	const auto presetPaths = parser.get<std::vector<std::filesystem::path>>("-p");
+	const auto outputPath = parser.get<std::filesystem::path>("-o");
+	const auto compressionLevel = parser.get<int>("-c");
+	const auto fallbackLanguages = parser.get<std::vector<xivres::game_language>>("-f");
 
 	if (rootPaths.empty()) {
 		std::cerr << "At least 1 root path is required." << std::endl;
-		return -1;
-	}
-
-	for (const auto& u8path : parser.get<std::vector<std::string>>("-p")) {
-		std::filesystem::path path = xivres::util::unicode::convert<std::wstring>(u8path);
-
-		if (!path.is_absolute())
-			path = absolute(path);
-
-		if (!exists(path)) {
-			std::cerr << "Path does not exist: " << path << std::endl;
-			return -1;
-		}
-
-		presetPaths.emplace_back(std::move(path));
-	}
-
-	outputPath = xivres::util::unicode::convert<std::wstring>(parser.get<std::string>("-o"));
-	if (!outputPath.is_absolute())
-		outputPath = absolute(outputPath);
-	if (outputPath.empty()) {
-		std::cerr << "Output path must be specified." << std::endl;
-		return -1;
-	}
-
-	int compressionLevel = parser.get<int>("-c");
-	if (compressionLevel < 0 || compressionLevel > Z_BEST_COMPRESSION) {
-		std::cerr << "Invalid compression level specified." << std::endl;
 		return -1;
 	}
 
@@ -988,6 +1025,16 @@ int main(int argc, char **argv) {
 		std::cerr << "* Preset: " << xivres::util::unicode::convert<std::string>(presetPath.u8string()) << std::endl;
 		m.add_transform_config(presetPath);
 	}
+
+	for (const auto& lang : std::views::reverse(fallbackLanguages))
+		m.move_fallback_language_to_top(lang);
+	std::cerr << "* Fallback language order:";
+	for (const auto& lang : m.fallback_languages()) {
+		nlohmann::json j;
+		to_json(j, lang);
+		std::cerr << " " << j.get<std::string>();
+	}
+	std::cerr << std::endl;
 
 	std::cerr << "* Output: " << xivres::util::unicode::convert<std::string>(outputPath.u8string()) << std::endl;
 	std::cerr << "* Compression level: " << compressionLevel << std::endl;

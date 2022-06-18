@@ -1,60 +1,6 @@
 #include "pch.h"
 #include "structs.h"
 
-namespace xivres {
-	void to_json(nlohmann::json& j, const game_language& value) {
-		switch (value) {
-			case game_language::Japanese:
-				j = "Japanese";
-				break;
-			case game_language::English:
-				j = "English";
-				break;
-			case game_language::German:
-				j = "German";
-				break;
-			case game_language::French:
-				j = "French";
-				break;
-			case game_language::ChineseSimplified:
-				j = "ChineseSimplified";
-				break;
-			case game_language::Korean:
-				j = "Korean";
-				break;
-			case game_language::Unspecified:
-			default:
-				j = "Unspecified"; // fallback
-		}
-	}
-
-	void from_json(const nlohmann::json& j, game_language& newValue) {
-		std::string newValueString = j.get<std::string>();
-		for (auto& c : newValueString)
-			if (c < 128)
-				c = std::tolower(c);
-
-		newValue = game_language::Unspecified;
-		if (newValueString.empty())
-			return;
-
-		if (newValueString.substr(0, std::min<size_t>(8, newValueString.size())) == "japanese")
-			newValue = game_language::Japanese;
-		else if (newValueString.substr(0, std::min<size_t>(7, newValueString.size())) == "english")
-			newValue = game_language::English;
-		else if (newValueString.substr(0, std::min<size_t>(6, newValueString.size())) == "german")
-			newValue = game_language::German;
-		else if (newValueString.substr(0, std::min<size_t>(8, newValueString.size())) == "deutsche")
-			newValue = game_language::German;
-		else if (newValueString.substr(0, std::min<size_t>(6, newValueString.size())) == "french")
-			newValue = game_language::French;
-		else if (newValueString.substr(0, std::min<size_t>(17, newValueString.size())) == "chinesesimplified")
-			newValue = game_language::ChineseSimplified;
-		else if (newValueString.substr(0, std::min<size_t>(6, newValueString.size())) == "korean")
-			newValue = game_language::Korean;
-	}
-}
-
 void structs::to_json(nlohmann::json& j, const PluralColumns& o) {
 	j = nlohmann::json::array({
 		o.singularColumnIndex,
